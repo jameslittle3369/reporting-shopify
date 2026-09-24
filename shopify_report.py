@@ -278,6 +278,14 @@ def to_num(val) -> float:
         return 0.0
 
 
+def col_series(table: dict, name: str, scale: float = 1, ndigits: int = 2) -> list:
+    """Column `name` of a {columns, rows} table as floats; zeros if the column is absent."""
+    if name not in table["columns"]:
+        return [0.0] * len(table["rows"])
+    i = table["columns"].index(name)
+    return [round(to_num(r[i]) * scale, ndigits) for r in table["rows"]]
+
+
 # ─────────────────────────────────────────────────────────────
 #  Metric queries
 # ─────────────────────────────────────────────────────────────
@@ -294,9 +302,9 @@ def fetch_all_metrics(days: int) -> dict:
 
     print("  → Sessions & conversion funnel …")
     data["sessions"] = shopifyql(
-        f"FROM sessions SHOW sessions, sessions_with_cart_additions, "
+        f"FROM sessions SHOW sessions, online_store_visitors, sessions_with_cart_additions, "
         f"sessions_that_reached_checkout, sessions_that_completed_checkout, "
-        f"conversion_rate TIMESERIES day SINCE {since} UNTIL today"
+        f"conversion_rate, bounce_rate TIMESERIES day SINCE {since} UNTIL today"
     )
 
     print("  → Top products …")
@@ -360,6 +368,11 @@ def calc_summary(data: dict) -> dict:
     total_sessions    = sum(to_num(r[sidx["sessions"]]) for r in sc["rows"])
     total_completed   = sum(to_num(r[sidx["sessions_that_completed_checkout"]]) for r in sc["rows"])
     conv_rate         = (total_completed / total_sessions * 100) if total_sessions else 0
+    # Sessions-weighted so busy days count more than quiet ones
+    daily_sessions    = col_series(sc, "sessions", ndigits=0)
+    daily_bounce      = col_series(sc, "bounce_rate", 100, ndigits=4)
+    bounce_rate       = (sum(s_ * b for s_, b in zip(daily_sessions, daily_bounce)) / total_sessions
+                         if total_sessions else 0)
 
     prod_rows = data["products"]["rows"]
     top_product       = prod_rows[0][0] if prod_rows else "—"
@@ -372,6 +385,7 @@ def calc_summary(data: dict) -> dict:
         "avg_aov":        avg_aov,
         "total_sessions": int(total_sessions),
         "conv_rate":      conv_rate,
+        "bounce_rate":    bounce_rate,
         "top_product":    top_product,
         "top_product_rev": top_product_rev,
     }
@@ -411,6 +425,8 @@ def build_interactive_html(data: dict, summary: dict, report_date: str) -> str:
     sess_check   = [to_num(r[sc_idx["sessions_that_reached_checkout"]]) for r in sc["rows"]]
     sess_done    = [to_num(r[sc_idx["sessions_that_completed_checkout"]]) for r in sc["rows"]]
     sess_conv    = [round(to_num(r[sc_idx["conversion_rate"]]) * 100, 2) for r in sc["rows"]]
+    sess_visitors = col_series(sc, "online_store_visitors", ndigits=0)
+    sess_bounce  = col_series(sc, "bounce_rate", 100)
 
     # ── products ──
     prod_labels  = [r[0] if r[0] else "(no title)" for r in prods["rows"]]
@@ -466,6 +482,7 @@ def build_interactive_html(data: dict, summary: dict, report_date: str) -> str:
   .card.c5 {{ border-left-color: #eb6834; }}
   .card.c6 {{ border-left-color: #e87ba4; }}
   .card.c7 {{ border-left-color: #008300; }}
+  .card.c8 {{ border-left-color: #e5484d; }}
   .card label {{ font-size: .7rem; font-weight: 500; text-transform: uppercase; letter-spacing: .07em; color: #9ca3af; }}
   .card .val {{ font-size: 1.5rem; font-weight: 600; margin-top: 4px; color: #111827; letter-spacing: -.02em; }}
   .card .sub {{ font-size: .72rem; color: #d1d5db; margin-top: 2px; }}
@@ -499,6 +516,7 @@ def build_interactive_html(data: dict, summary: dict, report_date: str) -> str:
     <div class="card c4"><label>Avg order value</label><div class="val">{fmt_money(summary["avg_aov"])}</div><div class="sub">Per order</div></div>
     <div class="card c5"><label>Sessions</label><div class="val">{summary["total_sessions"]:,}</div><div class="sub">Store visits</div></div>
     <div class="card c6"><label>Conversion rate</label><div class="val">{fmt_pct(summary["conv_rate"])}</div><div class="sub">Sessions → orders</div></div>
+    <div class="card c8"><label>Bounce rate</label><div class="val">{fmt_pct(summary["bounce_rate"])}</div><div class="sub">Single-page sessions</div></div>
     <div class="card c7"><label>Top product</label><div class="val" style="font-size:1rem;line-height:1.35">{summary["top_product"]}</div><div class="sub">{fmt_money(summary["top_product_rev"])}</div></div>
   </div>
 
@@ -527,9 +545,16 @@ def build_interactive_html(data: dict, summary: dict, report_date: str) -> str:
     </div>
 
     <div class="chart-card">
+      <h3>Bounce rate</h3>
+      <p class="chart-sub">% of sessions that left after one page</p>
+      <div class="chart-wrap"><canvas id="chartBounce"></canvas></div>
+    </div>
+
+    <div class="chart-card">
       <h3>Sessions funnel</h3>
-      <p class="chart-sub">Sessions → cart → checkout → completed</p>
+      <p class="chart-sub">Visitors → sessions → cart → checkout → completed</p>
       <div class="chart-legend">
+        <span><span class="sq" style="background:rgba(124,58,237,.7);"></span>Visitors</span>
         <span><span class="sq" style="background:rgba(42,120,214,.75);"></span>Sessions</span>
         <span><span class="sq" style="background:rgba(237,161,0,.75);"></span>Cart adds</span>
         <span><span class="sq" style="background:rgba(235,104,52,.75);"></span>Checkout</span>
@@ -630,9 +655,19 @@ mk('chartConv', 'line', {jlist(sess_labels)},
      pointBackgroundColor: '#e87ba4', pointBorderColor: '#fff', pointBorderWidth: 2 }}],
   {{ scales: {{ y: {{ ...BASE_OPTS.scales.y, ticks: {{ color: MUTED, font: {{ size:11 }}, callback: v => v+'%' }} }} }} }});
 
+// Bounce rate
+const bounceData = {jlist(sess_bounce)};
+mk('chartBounce', 'line', {jlist(sess_labels)},
+  [{{ label: 'Bounce %', data: bounceData, borderColor: '#e5484d', borderWidth: 2,
+     backgroundColor: 'rgba(229,72,77,0.08)', fill: true, tension: 0.4,
+     pointRadius: bounceData.map(v => v > 0 ? 5 : 2),
+     pointBackgroundColor: '#e5484d', pointBorderColor: '#fff', pointBorderWidth: 2 }}],
+  {{ scales: {{ y: {{ ...BASE_OPTS.scales.y, ticks: {{ color: MUTED, font: {{ size:11 }}, callback: v => v+'%' }} }} }} }});
+
 // Sessions funnel
 mk('chartSessions', 'bar', {jlist(sess_labels)}, [
-  {{ label: 'Sessions',   data: {jlist(sess_total)}, backgroundColor: 'rgba(42,120,214,.7)',  borderRadius: 3 }},
+  {{ label: 'Visitors',   data: {jlist(sess_visitors)}, backgroundColor: 'rgba(124,58,237,.7)', borderRadius: 3 }},
+  {{ label: 'Sessions',  data: {jlist(sess_total)}, backgroundColor: 'rgba(42,120,214,.7)',  borderRadius: 3 }},
   {{ label: 'Cart adds',  data: {jlist(sess_cart)},  backgroundColor: 'rgba(237,161,0,.75)', borderRadius: 3 }},
   {{ label: 'Checkout',   data: {jlist(sess_check)}, backgroundColor: 'rgba(235,104,52,.75)',borderRadius: 3 }},
   {{ label: 'Completed',  data: {jlist(sess_done)},  backgroundColor: 'rgba(27,175,122,.9)', borderRadius: 3 }}
@@ -934,6 +969,10 @@ def build_email_body(data: dict, summary: dict, report_date: str) -> str:
     sess_labels = [r[sc_idx["day"]] for r in data["sessions"]["rows"]]
     sess_total  = [to_num(r[sc_idx["sessions"]]) for r in data["sessions"]["rows"]]
     sess_done   = [to_num(r[sc_idx["sessions_that_completed_checkout"]]) for r in data["sessions"]["rows"]]
+    sess_visitors = col_series(data["sessions"], "online_store_visitors", ndigits=0)
+    sess_cart   = col_series(data["sessions"], "sessions_with_cart_additions", ndigits=0)
+    sess_check  = col_series(data["sessions"], "sessions_that_reached_checkout", ndigits=0)
+    sess_bounce = col_series(data["sessions"], "bounce_rate", 100)
 
     prod_rows   = data["products"]["rows"]
     prod_labels = [(r[0] or "(no title)") for r in prod_rows]
@@ -1124,6 +1163,39 @@ def build_email_body(data: dict, summary: dict, report_date: str) -> str:
         }},
     }, 260, 160, "Conversion Rate")
 
+    sess_short = [lbl[5:] if len(lbl) >= 10 else lbl for lbl in sess_labels]
+
+    def _line(label, series, color):
+        return {"label": label, "data": series, "borderColor": color,
+                "backgroundColor": "transparent", "fill": False,
+                "tension": 0.35, "pointRadius": 0, "borderWidth": 2}
+
+    img_behavior = _qc_dark({
+        "type": "line",
+        "data": {"labels": sess_short, "datasets": [
+            _line("Visitors",         sess_visitors, "#7c3aed"),
+            _line("Sessions",         sess_total,    "#2a78d6"),
+            _line("Added to cart",    sess_cart,     "#eda100"),
+            _line("Reached checkout", sess_check,    "#eb6834"),
+            _line("Completed",        sess_done,     "#1baf7a"),
+        ]},
+        "options": {"plugins": {"legend": {"display": True}}, "scales": {
+            "x": {"ticks": {"maxTicksLimit": 8, "maxRotation": 0}}, "y": {"ticks": {}},
+        }},
+    }, 540, 220, "Customer Behavior")
+
+    img_bounce = _qc_dark({
+        "type": "line",
+        "data": {"labels": sess_short, "datasets": [
+            {**_line("Bounce %", sess_bounce, "#e5484d"),
+             "backgroundColor": "rgba(229,72,77,0.2)", "fill": True},
+        ]},
+        "options": {"plugins": {"legend": {"display": False}}, "scales": {
+            "x": {"ticks": {"maxTicksLimit": 8, "maxRotation": 0}},
+            "y": {"ticks": {}, "title": {"display": True, "text": "% of sessions", "color": DK_MUTED}},
+        }},
+    }, 540, 180, "Bounce Rate")
+
     # ── summary cards ────────────────────────────────────────────
     CS = (f"display:inline-block;min-width:130px;margin:5px;padding:14px 18px;"
           f"background:{DK_INSET};border-radius:8px;border-left:3px solid {{c}};vertical-align:top;")
@@ -1134,6 +1206,7 @@ def build_email_body(data: dict, summary: dict, report_date: str) -> str:
         ("#eda100", "Avg order value", fmt_money(summary["avg_aov"])),
         ("#eb6834", "Sessions",        f"{summary['total_sessions']:,}"),
         ("#e87ba4", "Conversion rate", fmt_pct(summary["conv_rate"])),
+        ("#e5484d", "Bounce rate",     fmt_pct(summary["bounce_rate"])),
     ]
     cards_html = '<div style="margin:0 -5px;">'
     for clr, lbl, val in metrics:
@@ -1193,6 +1266,12 @@ def build_email_body(data: dict, summary: dict, report_date: str) -> str:
         cc("Orders per day", "Daily completed orders", img_orders),
         cc("Conversion rate", "% of sessions completing checkout", img_conv)
     )}
+
+    <!-- Customer behavior + Bounce rate -->
+    <div style="margin-top:16px;"></div>
+    {cc("Customer behavior", "Visitors, sessions, cart adds, checkout &amp; completed per day", img_behavior)}
+    <div style="margin-top:16px;"></div>
+    {cc("Bounce rate", "% of sessions that left after one page", img_bounce)}
 
     <!-- Top products -->
     <div style="margin-top:16px;"></div>

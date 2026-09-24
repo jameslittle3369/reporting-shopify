@@ -7,7 +7,7 @@ Queries all key Shopify metrics via the ShopifyQL / Admin GraphQL API, generates
 ## What it sends
 
 **Email body** (renders correctly in Outlook, Gmail, iPhone Mail, etc.)
-- Summary cards — gross revenue, net revenue, orders, avg order value, sessions, conversion rate
+- Summary cards — gross revenue, net revenue, orders, avg order value, sessions, conversion rate, bounce rate
 - Daily revenue chart (gross vs net) via QuickChart.io PNG
 - Orders per day and conversion rate charts
 - Top 10 products by gross sales
@@ -104,7 +104,7 @@ python shopify_report.py --auth
 | Query | Fields |
 |---|---|
 | Sales (daily) | orders, gross_sales, net_sales, total_sales, average_order_value |
-| Sessions (daily) | sessions, cart additions, checkout reached, completed, conversion_rate |
+| Sessions (daily) | sessions, online_store_visitors, cart additions, checkout reached, completed, conversion_rate, bounce_rate |
 | Top products | gross_sales, net_sales, orders — top 10 by gross |
 | Devices | sessions by device type |
 | Traffic source | orders, total_sales by referrer source |
