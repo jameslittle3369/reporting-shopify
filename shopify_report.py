@@ -434,7 +434,7 @@ def build_interactive_html(data: dict, summary: dict, report_date: str) -> str:
     prod_orders  = [to_num(r[2]) for r in prods["rows"]] if len(prods["columns"]) > 2 else []
 
     # ── devices ──
-    dev_labels   = [r[0].title() for r in devs["rows"]]
+    dev_labels   = [(r[0].title() if r[0] else "Unknown") for r in devs["rows"]]
     dev_vals     = [to_num(r[1]) for r in devs["rows"]]
 
     # ── attribution ──
@@ -551,16 +551,24 @@ def build_interactive_html(data: dict, summary: dict, report_date: str) -> str:
     </div>
 
     <div class="chart-card">
-      <h3>Sessions funnel</h3>
-      <p class="chart-sub">Visitors → sessions → cart → checkout → completed</p>
+      <h3>Visitors &amp; sessions</h3>
+      <p class="chart-sub">Daily unique visitors and sessions</p>
       <div class="chart-legend">
-        <span><span class="sq" style="background:rgba(124,58,237,.7);"></span>Visitors</span>
-        <span><span class="sq" style="background:rgba(42,120,214,.75);"></span>Sessions</span>
-        <span><span class="sq" style="background:rgba(237,161,0,.75);"></span>Cart adds</span>
-        <span><span class="sq" style="background:rgba(235,104,52,.75);"></span>Checkout</span>
-        <span><span class="sq" style="background:rgba(27,175,122,.9);"></span>Completed</span>
+        <span><span class="ln" style="background:#7c3aed;"></span>Visitors</span>
+        <span><span class="ln" style="background:#2a78d6;"></span>Sessions</span>
       </div>
-      <div class="chart-wrap"><canvas id="chartSessions"></canvas></div>
+      <div class="chart-wrap"><canvas id="chartTraffic"></canvas></div>
+    </div>
+
+    <div class="chart-card">
+      <h3>Cart &amp; checkout activity</h3>
+      <p class="chart-sub">Sessions that added to cart, reached checkout and completed</p>
+      <div class="chart-legend">
+        <span><span class="ln" style="background:#eda100;"></span>Added to cart</span>
+        <span><span class="ln" style="background:#eb6834;"></span>Reached checkout</span>
+        <span><span class="ln" style="background:#1baf7a;"></span>Completed</span>
+      </div>
+      <div class="chart-wrap"><canvas id="chartSteps"></canvas></div>
     </div>
 
     <div class="chart-card">
@@ -664,14 +672,22 @@ mk('chartBounce', 'line', {jlist(sess_labels)},
      pointBackgroundColor: '#e5484d', pointBorderColor: '#fff', pointBorderWidth: 2 }}],
   {{ scales: {{ y: {{ ...BASE_OPTS.scales.y, ticks: {{ color: MUTED, font: {{ size:11 }}, callback: v => v+'%' }} }} }} }});
 
-// Sessions funnel
-mk('chartSessions', 'bar', {jlist(sess_labels)}, [
-  {{ label: 'Visitors',   data: {jlist(sess_visitors)}, backgroundColor: 'rgba(124,58,237,.7)', borderRadius: 3 }},
-  {{ label: 'Sessions',  data: {jlist(sess_total)}, backgroundColor: 'rgba(42,120,214,.7)',  borderRadius: 3 }},
-  {{ label: 'Cart adds',  data: {jlist(sess_cart)},  backgroundColor: 'rgba(237,161,0,.75)', borderRadius: 3 }},
-  {{ label: 'Checkout',   data: {jlist(sess_check)}, backgroundColor: 'rgba(235,104,52,.75)',borderRadius: 3 }},
-  {{ label: 'Completed',  data: {jlist(sess_done)},  backgroundColor: 'rgba(27,175,122,.9)', borderRadius: 3 }}
+// Visitors & sessions / cart & checkout activity (line charts)
+const lineSeries = (label, data, color) => ({{ label, data, borderColor: color, borderWidth: 2,
+  backgroundColor: 'transparent', fill: false, tension: 0.4,
+  pointRadius: data.map(v => v > 0 ? 4 : 2),
+  pointBackgroundColor: color, pointBorderColor: '#fff', pointBorderWidth: 2 }});
+
+mk('chartTraffic', 'line', {jlist(sess_labels)}, [
+  lineSeries('Visitors', {jlist(sess_visitors)}, '#7c3aed'),
+  lineSeries('Sessions', {jlist(sess_total)},    '#2a78d6')
 ]);
+
+mk('chartSteps', 'line', {jlist(sess_labels)}, [
+  lineSeries('Added to cart',    {jlist(sess_cart)},  '#eda100'),
+  lineSeries('Reached checkout', {jlist(sess_check)}, '#eb6834'),
+  lineSeries('Completed',        {jlist(sess_done)},  '#1baf7a')
+], {{ scales: {{ y: {{ ...BASE_OPTS.scales.y, ticks: {{ color: MUTED, font: {{ size:11 }}, precision: 0 }} }} }} }});
 
 // Top products (horizontal bar)
 mk('chartProducts', 'bar', {jlist(prod_labels)}, [
@@ -979,11 +995,11 @@ def build_email_body(data: dict, summary: dict, report_date: str) -> str:
     prod_gross  = [to_num(r[1]) for r in prod_rows]
 
     dev_rows    = data["devices"]["rows"]
-    dev_labels  = [r[0].title() for r in dev_rows]
+    dev_labels  = [(r[0].title() if r[0] else "Unknown") for r in dev_rows]
     dev_vals    = [to_num(r[1]) for r in dev_rows]
 
     attr_rows   = data.get("attribution", {}).get("rows", [])
-    attr_labels = [(r[0].title() or "Unknown") for r in attr_rows]
+    attr_labels = [(r[0].title() if r[0] else "Unknown") for r in attr_rows]
     attr_vals   = [to_num(r[1]) for r in attr_rows]
 
     # Thin date labels — keep only every Nth so the axis isn't crowded
@@ -1170,19 +1186,25 @@ def build_email_body(data: dict, summary: dict, report_date: str) -> str:
                 "backgroundColor": "transparent", "fill": False,
                 "tension": 0.35, "pointRadius": 0, "borderWidth": 2}
 
-    img_behavior = _qc_dark({
-        "type": "line",
-        "data": {"labels": sess_short, "datasets": [
-            _line("Visitors",         sess_visitors, "#7c3aed"),
-            _line("Sessions",         sess_total,    "#2a78d6"),
-            _line("Added to cart",    sess_cart,     "#eda100"),
-            _line("Reached checkout", sess_check,    "#eb6834"),
-            _line("Completed",        sess_done,     "#1baf7a"),
-        ]},
-        "options": {"plugins": {"legend": {"display": True}}, "scales": {
-            "x": {"ticks": {"maxTicksLimit": 8, "maxRotation": 0}}, "y": {"ticks": {}},
-        }},
-    }, 540, 220, "Customer Behavior")
+    def _behavior_chart(datasets, alt):
+        return _qc_dark({
+            "type": "line",
+            "data": {"labels": sess_short, "datasets": datasets},
+            "options": {"plugins": {"legend": {"display": True}}, "scales": {
+                "x": {"ticks": {"maxTicksLimit": 8, "maxRotation": 0}}, "y": {"ticks": {}},
+            }},
+        }, 540, 200, alt)
+
+    img_traffic = _behavior_chart([
+        _line("Visitors", sess_visitors, "#7c3aed"),
+        _line("Sessions", sess_total,    "#2a78d6"),
+    ], "Visitors and Sessions")
+
+    img_steps = _behavior_chart([
+        _line("Added to cart",    sess_cart,  "#eda100"),
+        _line("Reached checkout", sess_check, "#eb6834"),
+        _line("Completed",        sess_done,  "#1baf7a"),
+    ], "Cart, Checkout and Completed")
 
     img_bounce = _qc_dark({
         "type": "line",
@@ -1269,7 +1291,9 @@ def build_email_body(data: dict, summary: dict, report_date: str) -> str:
 
     <!-- Customer behavior + Bounce rate -->
     <div style="margin-top:16px;"></div>
-    {cc("Customer behavior", "Visitors, sessions, cart adds, checkout &amp; completed per day", img_behavior)}
+    {cc("Visitors &amp; sessions", "Daily unique visitors and sessions", img_traffic)}
+    <div style="margin-top:16px;"></div>
+    {cc("Cart &amp; checkout activity", "Daily sessions that added to cart, reached checkout and completed", img_steps)}
     <div style="margin-top:16px;"></div>
     {cc("Bounce rate", "% of sessions that left after one page", img_bounce)}
 
